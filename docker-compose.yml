@@ -57,7 +57,7 @@ services:
       DB_URL: jdbc:postgresql://db:5432/tododb
       DB_USER: todo
       DB_PASSWORD: ${POSTGRES_PASSWORD:-todo_local_only}
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:4200}
       # Cú pháp ":?" làm compose dừng và in thông báo nếu biến chưa được đặt.
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
       JWT_SECRET: ${JWT_SECRET:?Hay dat JWT_SECRET trong file .env (xem .env.example)}
