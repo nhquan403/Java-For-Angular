@@ -4,6 +4,7 @@ import com.example.todo.application.common.Actor;
 import com.example.todo.application.common.AssistantEvent;
 import com.example.todo.application.common.AssistantModelException;
 import com.example.todo.application.common.InvalidAssistantRequestException;
+import com.example.todo.application.common.PageQuery;
 import com.example.todo.application.common.TooManyAssistantRequestsException;
 import com.example.todo.application.port.in.ChatWithAssistantUseCase.ChatMessage;
 import com.example.todo.application.port.in.ChatWithAssistantUseCase.Command;
@@ -114,7 +115,7 @@ class AssistantServiceTest {
         chat(ask(ALICE, "Gợi ý một việc"));
 
         assertThat(events).contains(new AssistantEvent.Suggestion("Việc mới", null));
-        assertThat(todos.list(ADMIN, null, com.example.todo.application.common.PageQuery.defaults())
+        assertThat(todos.list(ADMIN, null, PageQuery.defaults())
                 .totalElements()).isZero();
     }
 

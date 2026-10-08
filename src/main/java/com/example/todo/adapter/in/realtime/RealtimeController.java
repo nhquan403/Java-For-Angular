@@ -2,10 +2,8 @@ package com.example.todo.adapter.in.realtime;
 
 import com.example.todo.adapter.in.web.AuthenticatedActor;
 import com.example.todo.application.common.Actor;
-import com.example.todo.application.common.TooManySubscriptionsException;
 import com.example.todo.application.port.in.SubscribeToTodoEventsUseCase;
 import org.springframework.http.CacheControl;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -58,7 +56,7 @@ public class RealtimeController {
 
     /**
      * Mở luồng sự kiện. Xác thực bằng header Authorization (client hỗ trợ header) hoặc ?ticket=... (EventSource).
-     * Trả 429 (kèm Retry-After) nếu người dùng đã mở đủ số kết nối cho phép.
+     * Trả 429 (ProblemDetail, kèm Retry-After) nếu người dùng đã mở đủ số kết nối cho phép.
      */
     @GetMapping(path = RealtimeEndpoints.STREAM, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public ResponseEntity<SseEmitter> stream(Authentication authentication) {
@@ -68,14 +66,8 @@ public class RealtimeController {
 
         OutboundPump pump = new OutboundPump(new SseChannel(emitter),
                 properties.queueCapacity(), properties.heartbeatInterval(), properties.maxConnectionAge());
-        SubscribeToTodoEventsUseCase.Subscription subscription;
-        try {
-            subscription = subscribe.subscribe(actor, pump::offer);
-        } catch (TooManySubscriptionsException e) {
-            // Trả thẳng 429 không kèm nội dung. Client SSE gửi "Accept: text/event-stream", nếu để
-            // GlobalExceptionHandler trả lỗi dạng JSON thì Spring không chọn được định dạng và đổi thành 406.
-            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header(HttpHeaders.RETRY_AFTER, "5").build();
-        }
+        // Quá số kết nối thì use case ném TooManySubscriptionsException, GlobalExceptionHandler trả 429 + Retry-After.
+        SubscribeToTodoEventsUseCase.Subscription subscription = subscribe.subscribe(actor, pump::offer);
         pump.onClose(subscription::close);
 
         // Khi client ngắt hoặc lỗi, Spring gọi các callback này. close() gọi nhiều lần vẫn an toàn.

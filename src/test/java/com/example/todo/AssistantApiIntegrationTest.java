@@ -1,7 +1,6 @@
 package com.example.todo;
 
 import com.example.todo.application.common.AssistantModelException;
-import com.example.todo.application.port.in.ChatWithAssistantUseCase.ChatMessage;
 import com.example.todo.application.port.out.AssistantModelPort;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -11,15 +10,10 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -36,9 +30,6 @@ import static org.assertj.core.api.Assertions.assertThat;
                 "app.assistant.rate-limit-per-minute=3"
         })
 class AssistantApiIntegrationTest {
-
-    private static final String PASSWORD = "password123";
-    private static final Pattern ACCESS = Pattern.compile("\"accessToken\"\\s*:\\s*\"([^\"]+)\"");
 
     /** Trả lời theo câu hỏi cuối, để mỗi test chọn được kịch bản mà không chia sẻ trạng thái. */
     @TestConfiguration
@@ -83,33 +74,17 @@ class AssistantApiIntegrationTest {
     @Value("${local.server.port}")
     private int port;
 
-    private final HttpClient http = HttpClient.newHttpClient();
+    private ApiTestClient api;
     private String token;
 
     @BeforeEach
     void login() throws Exception {
-        String email = "assistant-" + UUID.randomUUID().toString().substring(0, 8) + "@example.com";
-        String credentials = "{\"email\":\"" + email + "\",\"password\":\"" + PASSWORD + "\"}";
-        assertThat(post("/api/auth/register", credentials, null, "application/json").statusCode()).isEqualTo(201);
-        HttpResponse<String> login = post("/api/auth/login", credentials, null, "application/json");
-        Matcher matcher = ACCESS.matcher(login.body());
-        assertThat(matcher.find()).isTrue();
-        token = matcher.group(1);
-    }
-
-    private HttpResponse<String> post(String path, String json, String bearer, String accept) throws Exception {
-        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
-                .header("Content-Type", "application/json")
-                .header("Accept", accept)
-                .POST(HttpRequest.BodyPublishers.ofString(json));
-        if (bearer != null) {
-            builder.header("Authorization", "Bearer " + bearer);
-        }
-        return http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+        api = new ApiTestClient(port);
+        token = api.registerAndLogin(ApiTestClient.uniqueEmail("assistant")).access();
     }
 
     private HttpResponse<String> chat(String json) throws Exception {
-        return post("/api/assistant/chat", json, token, "text/event-stream");
+        return api.send("POST", "/api/assistant/chat", json, token, "text/event-stream");
     }
 
     private static String ask(String question) {
@@ -164,7 +139,7 @@ class AssistantApiIntegrationTest {
 
     @Test
     void requiresLogin() throws Exception {
-        HttpResponse<String> response = post("/api/assistant/chat", ask("Chào"), null, "text/event-stream");
+        HttpResponse<String> response = api.send("POST", "/api/assistant/chat", ask("Chào"), null, "text/event-stream");
 
         assertProblem(response, 401);
     }
@@ -172,7 +147,7 @@ class AssistantApiIntegrationTest {
     @Test
     void rejectsInvalidRequestsWithProblemDetail() throws Exception {
         String tooMany = "{\"messages\":[" + String.join(",",
-                java.util.Collections.nCopies(21, "{\"role\":\"user\",\"content\":\"a\"}")) + "]}";
+                Collections.nCopies(21, "{\"role\":\"user\",\"content\":\"a\"}")) + "]}";
 
         assertProblem(chat("{\"messages\":[{\"role\":\"system\",\"content\":\"a\"}]}"), 400);
         assertProblem(chat("{\"messages\":[{\"role\":\"assistant\",\"content\":\"a\"},"
@@ -204,9 +179,7 @@ class AssistantApiIntegrationTest {
 
     @Test
     void isDocumentedInOpenApiAsAnEventStream() throws Exception {
-        HttpResponse<String> docs = http.send(HttpRequest.newBuilder(
-                        URI.create("http://localhost:" + port + "/v3/api-docs")).GET().build(),
-                HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> docs = api.send("GET", "/v3/api-docs", null, null);
 
         assertThat(docs.statusCode()).isEqualTo(200);
         assertThat(docs.body()).contains("/api/assistant/chat").contains("text/event-stream");

@@ -1,5 +1,6 @@
 package com.example.todo.adapter.in.web.dto;
 
+import com.example.todo.domain.model.Todo;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
@@ -9,10 +10,10 @@ import jakarta.validation.constraints.Size;
  */
 public record UpdateTodoRequest(
         @NotBlank(message = "title must not be blank")
-        @Size(max = 100, message = "title must not exceed 100 characters")
+        @Size(max = Todo.MAX_TITLE_LENGTH, message = "title must not exceed {max} characters")
         String title,
 
-        @Size(max = 500, message = "description must not exceed 500 characters")
+        @Size(max = Todo.MAX_DESCRIPTION_LENGTH, message = "description must not exceed {max} characters")
         String description,
 
         Long version) {

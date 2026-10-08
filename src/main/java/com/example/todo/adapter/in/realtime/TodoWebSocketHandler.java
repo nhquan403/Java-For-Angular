@@ -84,11 +84,6 @@ public class TodoWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    /** Số kết nối WebSocket đang mở, để theo dõi và test. */
-    public int connectionCount() {
-        return pumps.size();
-    }
-
     private static final class WebSocketChannel implements OutboundPump.Channel {
 
         private final WebSocketSession session;

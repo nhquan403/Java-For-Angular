@@ -72,8 +72,10 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     /** Mở quá nhiều kết nối thời gian thực. Client nên đóng bớt kết nối cũ rồi thử lại. */
     @ExceptionHandler(TooManySubscriptionsException.class)
-    public ProblemDetail handleTooMany(TooManySubscriptionsException ex) {
-        return ProblemDetail.forStatusAndDetail(HttpStatus.TOO_MANY_REQUESTS, ex.getMessage());
+    public ResponseEntity<ProblemDetail> handleTooManySubscriptions(TooManySubscriptionsException ex) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, "5")
+                .body(ProblemDetail.forStatusAndDetail(HttpStatus.TOO_MANY_REQUESTS, ex.getMessage()));
     }
 
     /** Hỏi trợ lý AI quá số lần cho phép trong một phút. Retry-After cho biết bao lâu nữa hỏi lại được. */
