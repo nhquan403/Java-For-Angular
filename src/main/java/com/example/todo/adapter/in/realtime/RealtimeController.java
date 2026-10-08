@@ -82,6 +82,16 @@ public class RealtimeController {
         emitter.onCompletion(pump::close);
         emitter.onTimeout(pump::close);
         emitter.onError(e -> pump.close());
+
+        // Gửi ngay một dòng chú thích để header 200 tới client lập tức. Không có nó, header chỉ được gửi
+        // cùng lần ghi đầu tiên (heartbeat sau 25 giây), client phải chờ chừng đó mới biết đã kết nối.
+        // Gửi TRƯỚC pump.start() để không bao giờ có hai luồng cùng ghi.
+        try {
+            emitter.send(SseEmitter.event().comment("connected"));
+        } catch (IOException e) {
+            pump.close();
+            return ResponseEntity.noContent().build();
+        }
         pump.start();
 
         return ResponseEntity.ok()

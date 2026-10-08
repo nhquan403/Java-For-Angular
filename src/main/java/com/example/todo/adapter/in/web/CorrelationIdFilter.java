@@ -45,17 +45,14 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
         try {
             chain.doFilter(request, response);
         } finally {
-            long millis = (System.nanoTime() - start) / 1_000_000;
-            log.info("{} {} -> {} ({} ms)",
-                    request.getMethod(), request.getRequestURI(), response.getStatus(), millis);
+            // Health check được gọi liên tục, ghi log thì ngập. Nó vẫn có request id ở header như mọi request.
+            if (!request.getRequestURI().startsWith("/actuator")) {
+                long millis = (System.nanoTime() - start) / 1_000_000;
+                log.info("{} {} -> {} ({} ms)",
+                        request.getMethod(), request.getRequestURI(), response.getStatus(), millis);
+            }
             MDC.remove(MDC_KEY);
         }
-    }
-
-    /** Bỏ qua health check để log không bị ngập. */
-    @Override
-    protected boolean shouldNotFilter(HttpServletRequest request) {
-        return request.getRequestURI().startsWith("/actuator");
     }
 
     /** Chỉ nhận id an toàn từ client, tránh nhét ký tự lạ vào log (log injection). */
