@@ -9,15 +9,16 @@ import com.example.todo.application.port.in.ListTodosUseCase;
 import com.example.todo.application.port.out.AssistantModelPort;
 import com.example.todo.application.port.out.AssistantModelPort.ModelTurn;
 import com.example.todo.application.port.out.AssistantModelPort.StopReason;
-import com.example.todo.application.port.out.AssistantModelPort.Text;
 import com.example.todo.application.port.out.AssistantModelPort.ToolCall;
 import com.example.todo.application.port.out.AssistantModelPort.ToolResult;
+import com.example.todo.application.port.out.AssistantModelPort.TurnStream;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Trợ lý AI: vòng lặp "mô hình trả lời -> chạy tool -> gửi kết quả -> mô hình trả lời tiếp".
+ * Văn bản của mô hình được phát cho client ngay khi sinh ra (từng mẩu một), như các ứng dụng chat AI.
  * Tool nằm ở AssistantTools, system prompt ở AssistantPrompt.
  */
 public class AssistantService implements ChatWithAssistantUseCase {
@@ -47,7 +48,8 @@ public class AssistantService implements ChatWithAssistantUseCase {
                 AssistantPrompt.build(command.actor(), command.context()),
                 AssistantTools.DEFINITIONS,
                 command.messages());
-        ModelTurn firstTurn = session.next();
+        // Mở luồng vòng đầu ngay trên luồng request: lỗi (key sai, quá tải...) còn kịp thành HTTP 503.
+        TurnStream firstTurn = session.next();
         return sink -> new Conversation(command.actor(), session, sink).run(firstTurn);
     }
 
@@ -67,29 +69,27 @@ public class AssistantService implements ChatWithAssistantUseCase {
             this.sink = sink;
         }
 
-        private Outcome run(ModelTurn firstTurn) {
-            ModelTurn turn = firstTurn;
+        private Outcome run(TurnStream firstTurn) {
+            TurnStream stream = firstTurn;
             while (true) {
+                // 1. Nhận câu trả lời, phát từng mẩu văn bản cho client ngay khi có.
+                ModelTurn turn;
+                try {
+                    turn = stream.read(text -> sink.emit(new AssistantEvent.Delta(text)));
+                } catch (AssistantModelException e) {
+                    return fail(Outcome.Status.MODEL_ERROR, MODEL_ERROR_MESSAGE);
+                }
+                if (turn.stopReason() == StopReason.CANCELLED) {
+                    return finish(Outcome.Status.CANCELLED);
+                }
                 inputTokens += turn.inputTokens();
                 outputTokens += turn.outputTokens();
-
-                // 1. Phát văn bản, gom các lời gọi tool.
-                List<ToolCall> calls = new ArrayList<>();
-                for (AssistantModelPort.Block block : turn.blocks()) {
-                    if (block instanceof Text text && !text.text().isBlank()
-                            && !sink.emit(new AssistantEvent.Delta(text.text()))) {
-                        return finish(Outcome.Status.CANCELLED);
-                    }
-                    if (block instanceof ToolCall call) {
-                        calls.add(call);
-                    }
-                }
 
                 // 2. Mô hình dừng thì kết thúc.
                 if (turn.stopReason() == StopReason.REFUSAL) {
                     return fail(Outcome.Status.REFUSED, REFUSAL_MESSAGE);
                 }
-                if (turn.stopReason() != StopReason.TOOL_USE || calls.isEmpty()) {
+                if (turn.stopReason() != StopReason.TOOL_USE || turn.toolCalls().isEmpty()) {
                     return sink.emit(new AssistantEvent.Done())
                             ? finish(Outcome.Status.COMPLETED)
                             : finish(Outcome.Status.CANCELLED);
@@ -100,8 +100,8 @@ public class AssistantService implements ChatWithAssistantUseCase {
 
                 // 3. Chạy mọi tool của vòng này, gửi tất cả kết quả trong một lần.
                 toolRounds++;
-                List<ToolResult> results = new ArrayList<>(calls.size());
-                for (ToolCall call : calls) {
+                List<ToolResult> results = new ArrayList<>(turn.toolCalls().size());
+                for (ToolCall call : turn.toolCalls()) {
                     if (!sink.emit(new AssistantEvent.ToolUse(call.name()))) {
                         return finish(Outcome.Status.CANCELLED);
                     }
@@ -115,7 +115,7 @@ public class AssistantService implements ChatWithAssistantUseCase {
 
                 // 4. Hỏi mô hình vòng tiếp theo.
                 try {
-                    turn = session.next();
+                    stream = session.next();
                 } catch (AssistantModelException e) {
                     return fail(Outcome.Status.MODEL_ERROR, MODEL_ERROR_MESSAGE);
                 }

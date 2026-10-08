@@ -35,27 +35,36 @@ class AssistantApiIntegrationTest {
     @TestConfiguration
     static class FakeModelConfig {
 
+        /** Mỗi vòng: các mẩu văn bản phát lần lượt (như stream thật), rồi kết thúc vòng. */
+        private record Step(List<String> chunks, AssistantModelPort.ModelTurn turn) {
+        }
+
         @Bean
         @Primary
         AssistantModelPort fakeAssistantModel() {
             return (systemPrompt, tools, history) -> {
                 String question = history.getLast().content();
-                List<AssistantModelPort.ModelTurn> turns = question.contains("soạn")
+                List<Step> steps = question.contains("soạn")
                         ? List.of(
-                        new AssistantModelPort.ModelTurn(List.of(new AssistantModelPort.ToolCall("t1", "suggest_todo",
-                                Map.of("title", "Chuẩn bị họp sprint", "description", "Gom việc"))),
-                                AssistantModelPort.StopReason.TOOL_USE, 1, 1),
-                        textTurn("Mình đã gợi ý."))
-                        : List.of(textTurn("Xin chào \"bạn\"\nDòng 2"));
+                        new Step(List.of(), new AssistantModelPort.ModelTurn(
+                                List.of(new AssistantModelPort.ToolCall("t1", "suggest_todo",
+                                        Map.of("title", "Chuẩn bị họp sprint", "description", "Gom việc"))),
+                                AssistantModelPort.StopReason.TOOL_USE, 1, 1)),
+                        textStep("Mình đã gợi ý."))
+                        : List.of(textStep("Xin chào ", "\"bạn\"\nDòng 2"));
                 return new AssistantModelPort.Session() {
                     private int index;
 
                     @Override
-                    public AssistantModelPort.ModelTurn next() {
+                    public AssistantModelPort.TurnStream next() {
                         if (question.contains("hỏng")) {
                             throw new AssistantModelException("simulated", null);
                         }
-                        return turns.get(Math.min(index++, turns.size() - 1));
+                        Step step = steps.get(Math.min(index++, steps.size() - 1));
+                        return listener -> {
+                            step.chunks().forEach(listener::onText);
+                            return step.turn();
+                        };
                     }
 
                     @Override
@@ -65,9 +74,9 @@ class AssistantApiIntegrationTest {
             };
         }
 
-        private static AssistantModelPort.ModelTurn textTurn(String text) {
-            return new AssistantModelPort.ModelTurn(List.of(new AssistantModelPort.Text(text)),
-                    AssistantModelPort.StopReason.END_TURN, 1, 1);
+        private static Step textStep(String... chunks) {
+            return new Step(List.of(chunks), new AssistantModelPort.ModelTurn(
+                    List.of(), AssistantModelPort.StopReason.END_TURN, 1, 1));
         }
     }
 
@@ -110,7 +119,8 @@ class AssistantApiIntegrationTest {
         assertThat(response.headers().firstValue("Content-Type").orElse("")).startsWith("text/event-stream");
         assertThat(response.headers().firstValue("X-Request-Id")).isPresent();
         assertThat(response.body()).isEqualTo(
-                "event: delta\ndata: {\"text\":\"Xin chào \\\"bạn\\\"\\nDòng 2\"}\n\n"
+                "event: delta\ndata: {\"text\":\"Xin chào \"}\n\n"
+                        + "event: delta\ndata: {\"text\":\"\\\"bạn\\\"\\nDòng 2\"}\n\n"
                         + "event: done\ndata: {}\n\n");
     }
 

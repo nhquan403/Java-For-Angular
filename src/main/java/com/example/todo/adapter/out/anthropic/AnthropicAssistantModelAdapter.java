@@ -2,14 +2,17 @@ package com.example.todo.adapter.out.anthropic;
 
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.core.JsonValue;
+import com.anthropic.core.http.StreamResponse;
 import com.anthropic.errors.AnthropicException;
 import com.anthropic.errors.AnthropicServiceException;
+import com.anthropic.helpers.MessageAccumulator;
 import com.anthropic.models.messages.ContentBlock;
 import com.anthropic.models.messages.ContentBlockParam;
 import com.anthropic.models.messages.Message;
 import com.anthropic.models.messages.MessageCreateParams;
 import com.anthropic.models.messages.MessageParam;
 import com.anthropic.models.messages.OutputConfig;
+import com.anthropic.models.messages.RawMessageStreamEvent;
 import com.anthropic.models.messages.Tool;
 import com.anthropic.models.messages.ToolResultBlockParam;
 import com.example.todo.application.common.AssistantModelException;
@@ -21,14 +24,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
 /**
  * OUTBOUND ADAPTER: gọi Claude qua Claude Java SDK chính thức (com.anthropic:anthropic-java).
  *
- * Mỗi vòng là một request không stream: câu trả lời của mỗi vòng ngắn (effort LOW), và frontend nhận mỗi khối
- * văn bản thành một sự kiện delta, nên đơn giản hơn stream từng chữ mà hợp đồng với frontend vẫn như nhau.
+ * Mỗi vòng là một request stream (createStreaming): chữ Claude sinh ra tới đâu được chuyển cho lõi tới đó,
+ * MessageAccumulator ghép lại câu trả lời đầy đủ để gửi lại ở vòng sau.
  *
  * Cấu hình gửi đi: thinking để mặc định (model luôn bật, gửi "disabled" sẽ bị 400), effort LOW,
  * tool_choice để mặc định auto (ép "any"/"tool" sẽ bị 400), tool strict + additionalProperties=false.
@@ -78,7 +82,7 @@ public class AnthropicAssistantModelAdapter implements AssistantModelPort {
         }
 
         @Override
-        public ModelTurn next() {
+        public TurnStream next() {
             MessageCreateParams.Builder params = MessageCreateParams.builder()
                     .model(model)
                     .maxTokens(maxTokens)
@@ -87,31 +91,45 @@ public class AnthropicAssistantModelAdapter implements AssistantModelPort {
                     .messages(messages);
             tools.forEach(params::addTool);
 
-            Message response;
+            // Lỗi HTTP (key sai, hết credit, quá tải...) ném ngay ở đây, trước khi có chữ nào.
+            StreamResponse<RawMessageStreamEvent> response;
             try {
-                response = client.messages().create(params.build());
-            } catch (AnthropicServiceException e) {
-                // Thông báo lỗi của API (key sai, hết credit, model không có quyền...) để biết vì sao 503.
-                // Nó không chứa nội dung hội thoại.
-                log.warn("Claude request failed: status={} type={} message={}", e.statusCode(),
-                        e.errorType().map(Object::toString).orElse("unknown"), e.getMessage());
-                throw new AssistantModelException("Claude request failed with status " + e.statusCode(), e);
+                response = client.messages().createStreaming(params.build());
             } catch (AnthropicException e) {
-                // Thường là lỗi mạng: không phân giải được tên miền, proxy, chứng chỉ TLS, hết thời gian chờ.
-                log.warn("Claude request failed: {} cause={}", e.getClass().getSimpleName(), rootCause(e));
-                throw new AssistantModelException("Claude request failed", e);
+                throw failure(e);
+            }
+            return listener -> read(response, listener);
+        }
+
+        private ModelTurn read(StreamResponse<RawMessageStreamEvent> response, TextListener listener) {
+            MessageAccumulator accumulator = MessageAccumulator.create();
+            // try-with-resources: client ngắt giữa chừng thì đóng luồng, Claude ngừng sinh và ngừng tính token.
+            try (response) {
+                Iterator<RawMessageStreamEvent> events = response.stream().iterator();
+                while (events.hasNext()) {
+                    RawMessageStreamEvent event = accumulator.accumulate(events.next());
+                    String text = event.contentBlockDelta()
+                            .flatMap(delta -> delta.delta().text())
+                            .map(textDelta -> textDelta.text())
+                            .orElse("");
+                    if (!text.isEmpty() && !listener.onText(text)) {
+                        return ModelTurn.cancelled();
+                    }
+                }
+            } catch (AnthropicException e) {
+                throw failure(e);
             }
 
+            Message message = accumulator.message();
             // Nguyên câu trả lời, kể cả khối thinking: vòng sau gửi lại đúng như vậy.
-            messages.add(response.toParam());
+            messages.add(message.toParam());
 
-            List<Block> blocks = new ArrayList<>();
-            for (ContentBlock block : response.content()) {
-                block.text().ifPresent(text -> blocks.add(new Text(text.text())));
-                block.toolUse().ifPresent(use -> blocks.add(new ToolCall(use.id(), use.name(), toMap(use._input()))));
+            List<ToolCall> toolCalls = new ArrayList<>();
+            for (ContentBlock block : message.content()) {
+                block.toolUse().ifPresent(use -> toolCalls.add(new ToolCall(use.id(), use.name(), toMap(use._input()))));
             }
-            return new ModelTurn(blocks, stopReason(response),
-                    response.usage().inputTokens(), response.usage().outputTokens());
+            return new ModelTurn(toolCalls, stopReason(message),
+                    message.usage().inputTokens(), message.usage().outputTokens());
         }
 
         @Override
@@ -128,6 +146,19 @@ public class AnthropicAssistantModelAdapter implements AssistantModelPort {
                     .contentOfBlockParams(blocks)
                     .build());
         }
+    }
+
+    /** Ghi log lý do (không có nội dung hội thoại) rồi đổi thành lỗi của lõi. */
+    private static AssistantModelException failure(AnthropicException e) {
+        if (e instanceof AnthropicServiceException service) {
+            // Thông báo lỗi của API (key sai, hết credit, model không có quyền...) để biết vì sao 503.
+            log.warn("Claude request failed: status={} type={} message={}", service.statusCode(),
+                    service.errorType().map(Object::toString).orElse("unknown"), service.getMessage());
+            return new AssistantModelException("Claude request failed with status " + service.statusCode(), e);
+        }
+        // Thường là lỗi mạng: không phân giải được tên miền, proxy, chứng chỉ TLS, hết thời gian chờ.
+        log.warn("Claude request failed: {} cause={}", e.getClass().getSimpleName(), rootCause(e));
+        return new AssistantModelException("Claude request failed", e);
     }
 
     /**

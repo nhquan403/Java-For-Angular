@@ -269,6 +269,46 @@ class AssistantServiceTest {
     }
 
     @Test
+    void streamsEachTextChunkAsItsOwnDelta() {
+        model.then(text("Bạn ", "có ", "2 việc."));
+
+        chat(ask(ALICE, "Có mấy việc?"));
+
+        assertThat(events).containsExactly(
+                new AssistantEvent.Delta("Bạn "),
+                new AssistantEvent.Delta("có "),
+                new AssistantEvent.Delta("2 việc."),
+                new AssistantEvent.Done());
+    }
+
+    @Test
+    void streamFailureMidAnswerKeepsWhatWasSentAndEndsWithAnError() {
+        model.thenFailWhileStreaming("Đang ", "trả lời");
+
+        Outcome outcome = chat(ask(ALICE, "Tóm tắt"));
+
+        assertThat(events).containsExactly(
+                new AssistantEvent.Delta("Đang "),
+                new AssistantEvent.Delta("trả lời"),
+                new AssistantEvent.Error(AssistantService.MODEL_ERROR_MESSAGE));
+        assertThat(outcome.status()).isEqualTo(Outcome.Status.MODEL_ERROR);
+    }
+
+    @Test
+    void stopsReadingTheStreamAsSoonAsTheClientDisconnects() {
+        model.then(text("một ", "hai ", "ba"));
+        List<AssistantEvent> received = new ArrayList<>();
+
+        Outcome outcome = assistant.start(ask(ALICE, "Đếm")).deliver(event -> {
+            received.add(event);
+            return received.size() < 2; // client ngắt sau mẩu thứ hai
+        });
+
+        assertThat(received).containsExactly(new AssistantEvent.Delta("một "), new AssistantEvent.Delta("hai "));
+        assertThat(outcome.status()).isEqualTo(Outcome.Status.CANCELLED);
+    }
+
+    @Test
     void modelFailureOnTheFirstCallIsThrownBeforeStreaming() {
         model.thenFail();
 

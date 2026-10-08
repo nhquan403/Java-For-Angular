@@ -310,7 +310,7 @@ curl -N -X POST localhost:8080/api/assistant/chat -H "Authorization: Bearer $TOK
 - Tối đa 6 vòng tool cho một câu hỏi; cần thêm thì dừng và trả sự kiện `error`. `list_todos` trả tối đa 50 todo mỗi lần.
 - Rate limit giữ trong bộ nhớ, mỗi instance đếm riêng: chạy N instance thì giới hạn thực tế gấp N.
 - Không lưu lịch sử chat: frontend gửi lại toàn bộ hội thoại mỗi lần hỏi.
-- Mỗi vòng gọi Claude không stream: mỗi khối văn bản thành một sự kiện `delta` (không phải từng chữ). Vòng đầu chạy trên luồng request để trả được 503 đúng nghĩa, nên header 200 về sau khi Claude trả lời vòng đầu.
+- Câu trả lời được stream: chữ Claude sinh ra tới đâu, backend gửi một sự kiện `delta` tới đó (thường vài chữ mỗi sự kiện), nên chữ hiện ra dần như các ứng dụng chat AI. Trước khi có chữ đầu tiên thường có vài giây im lặng (model đang suy nghĩ, gọi tool). Lượt gọi Claude đầu tiên được mở ngay trên luồng request để còn trả được 503 nếu lỗi, nên header 200 chỉ về khi Claude đã nhận request.
 - Log chỉ ghi user id, số vòng tool, số token và request id; không ghi nội dung hội thoại.
 
 ### Chi phí cần lưu ý
