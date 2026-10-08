@@ -255,6 +255,7 @@ FE --POST /api/assistant/chat--> AssistantController (adapter/in/web)
 | Biến / thuộc tính | Mặc định | Ý nghĩa |
 |---|---|---|
 | `ANTHROPIC_API_KEY` (biến môi trường) | không có | **Bắt buộc.** Thiếu thì endpoint không được đăng ký (404, frontend hiện "trợ lý chưa được bật"), app vẫn chạy bình thường. Không ghi key vào file cấu hình |
+| `ANTHROPIC_WORKSPACE_ID` (biến môi trường) | không có | Chỉ cần với key không gắn workspace (`sk-ant-usr-...`): backend gửi kèm header `anthropic-workspace-id`. Thiếu thì Claude trả 400 và API chat trả 503 |
 | `app.assistant.enabled` | `true` | `false` thì tắt hẳn (404) kể cả khi có key |
 | `app.assistant.model` | `claude-opus-5-5` | Model Claude |
 | `app.assistant.max-tokens` | `16000` | Token tối đa của một vòng trả lời, gồm cả phần suy nghĩ |

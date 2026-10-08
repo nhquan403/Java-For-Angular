@@ -12,6 +12,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
+import org.springframework.util.StringUtils;
 
 import java.time.Clock;
 import java.util.concurrent.ExecutorService;
@@ -25,17 +26,26 @@ import java.util.concurrent.Executors;
 @EnableConfigurationProperties(AssistantProperties.class)
 public class AssistantConfig {
 
+    private static final String WORKSPACE_ID_VARIABLE = "ANTHROPIC_WORKSPACE_ID";
+
     /**
      * Client Claude. API key lấy từ biến môi trường ANTHROPIC_API_KEY (qua Environment của Spring, nên test
      * có thể đặt giá trị giả), không bao giờ ghi ra log hay file cấu hình.
+     *
+     * Key không gắn với workspace nào (loại sk-ant-usr-...) phải gửi kèm header anthropic-workspace-id,
+     * lấy từ biến môi trường ANTHROPIC_WORKSPACE_ID. Key thường (gắn với một workspace) không cần.
      */
     @Bean(destroyMethod = "close")
     public AnthropicClient anthropicClient(Environment environment, AssistantProperties properties) {
-        return AnthropicOkHttpClient.builder()
+        AnthropicOkHttpClient.Builder builder = AnthropicOkHttpClient.builder()
                 .fromEnv()
                 .apiKey(environment.getRequiredProperty(ConditionalOnAssistantEnabled.API_KEY_VARIABLE))
-                .timeout(properties.requestTimeout())
-                .build();
+                .timeout(properties.requestTimeout());
+        String workspaceId = environment.getProperty(WORKSPACE_ID_VARIABLE);
+        if (StringUtils.hasText(workspaceId)) {
+            builder.putHeader("anthropic-workspace-id", workspaceId.strip());
+        }
+        return builder.build();
     }
 
     @Bean
