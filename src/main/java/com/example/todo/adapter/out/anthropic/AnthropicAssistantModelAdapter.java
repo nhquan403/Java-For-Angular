@@ -91,11 +91,14 @@ public class AnthropicAssistantModelAdapter implements AssistantModelPort {
             try {
                 response = client.messages().create(params.build());
             } catch (AnthropicServiceException e) {
-                log.warn("Claude request failed: status={} type={}",
-                        e.statusCode(), e.errorType().map(Object::toString).orElse("unknown"));
+                // Thông báo lỗi của API (key sai, hết credit, model không có quyền...) để biết vì sao 503.
+                // Nó không chứa nội dung hội thoại.
+                log.warn("Claude request failed: status={} type={} message={}", e.statusCode(),
+                        e.errorType().map(Object::toString).orElse("unknown"), e.getMessage());
                 throw new AssistantModelException("Claude request failed with status " + e.statusCode(), e);
             } catch (AnthropicException e) {
-                log.warn("Claude request failed: {}", e.getClass().getSimpleName());
+                // Thường là lỗi mạng: không phân giải được tên miền, proxy, chứng chỉ TLS, hết thời gian chờ.
+                log.warn("Claude request failed: {} cause={}", e.getClass().getSimpleName(), rootCause(e));
                 throw new AssistantModelException("Claude request failed", e);
             }
 
@@ -142,6 +145,14 @@ public class AnthropicAssistantModelAdapter implements AssistantModelPort {
             case REFUSAL -> StopReason.REFUSAL;
             default -> StopReason.OTHER;
         };
+    }
+
+    private static String rootCause(Throwable e) {
+        Throwable root = e;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        return root.getClass().getSimpleName() + ": " + root.getMessage();
     }
 
     private static Map<String, Object> toMap(JsonValue input) {
