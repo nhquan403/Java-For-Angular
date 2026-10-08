@@ -51,12 +51,12 @@ mvn verify
 | Health check (Actuator) | `/actuator/health` |
 | Tài liệu API (OpenAPI) | `OpenApiConfig` |
 | CORS | `WebConfig`, `app.cors.allowed-origins` |
-| Trợ lý AI (Claude) trả lời qua SSE, đọc todo bằng tool | `AssistantService`, `AssistantController`, `AnthropicAssistantModelAdapter` |
+| Trợ lý AI (Claude) trả lời qua SSE, đọc todo bằng tool | `AssistantService`, `AssistantTools`, `AssistantPrompt`, `AssistantController`, `AnthropicAssistantModelAdapter` |
 | Test tích hợp | `TodoApiIntegrationTest` |
 | Test kiến trúc (ArchUnit) | `ArchitectureTest` |
 | CI (GitHub Actions) | `.github/workflows/ci.yml` |
 
-**Chưa có:** cache, rate limit và chống dò mật khẩu (xem mục Giới hạn bên dưới), Testcontainers, xác thực email, quên mật khẩu, khóa/xóa tài khoản.
+**Chưa có:** cache, rate limit cho đăng nhập và chống dò mật khẩu (xem mục Giới hạn bên dưới), Testcontainers, xác thực email, quên mật khẩu, khóa/xóa tài khoản.
 
 ## Kiến trúc Hexagonal (Ports & Adapters)
 
@@ -94,7 +94,8 @@ src/main/java/com/example/todo/
 │   ├── port/in/                   use case todo, auth, quản lý user
 │   ├── port/out/                  TodoRepositoryPort, UserRepositoryPort, RefreshTokenRepositoryPort,
 │   │                              PasswordHasherPort, TokenPort, AssistantModelPort
-│   └── service/                   TodoService, AuthService, UserService, RealtimeService, AssistantService
+│   └── service/                   TodoService, AuthService, UserService, RealtimeService,
+│                                  AssistantService (+ AssistantTools, AssistantPrompt)
 ├── adapter/
 │   ├── in/web/                  TodoController, AuthController, AdminUserController,
 │   │                              GlobalExceptionHandler, ProblemJsonSecurityHandlers, CorrelationIdFilter, dto/
@@ -243,7 +244,7 @@ Chạy cả hệ thống có Kafka: `docker compose up --build` (compose đã c�
 FE --POST /api/assistant/chat--> AssistantController (adapter/in/web)
                                    | đọc user từ token, kiểm tra, rate limit, gọi Claude vòng đầu
                                    v
-                                AssistantService (application)  --tool--> ListTodosUseCase / GetTodoUseCase
+                                AssistantService (application)  --AssistantTools--> ListTodosUseCase / GetTodoUseCase
                                    |                                       (quyền của người gọi, như GET /api/todos)
                                    v
                                 AssistantModelPort --> AnthropicAssistantModelAdapter (adapter/out/anthropic) --> Claude
@@ -267,7 +268,7 @@ mvn spring-boot:run
 # Docker: đặt ANTHROPIC_API_KEY trong file .env (xem .env.example), docker-compose.yml đã chuyển nó vào app
 ```
 
-Frontend Angular chạy ở `http://localhost:4200` thì domain đó phải có trong `app.cors.allowed-origins` (mặc định chỉ có 3000 và 5173), hoặc frontend gọi qua proxy của `ng serve`. `/api/assistant/**` dùng chung CORS và bảo mật Bearer với `/api/todos`.
+Mặc định `app.cors.allowed-origins` đã có `http://localhost:4200` (Angular `ng serve`) cho môi trường dev; production đặt bằng `CORS_ALLOWED_ORIGINS`. `/api/assistant/**` dùng chung CORS và bảo mật Bearer với `/api/todos`.
 
 ### Hợp đồng với frontend
 
@@ -400,7 +401,7 @@ Trong Swagger UI (profile dev), bấm nút **Authorize** rồi dán access token
 
 ## Thêm thay đổi cấu trúc database
 
-Không sửa các file `V1` đến `V3`. Tạo file mới, ví dụ `V4__add_due_date.sql`, Flyway sẽ chạy nó đúng một lần khi app khởi động. Nhớ thêm field tương ứng vào `TodoJpaEntity`, vì `ddl-auto=validate` sẽ báo lỗi nếu entity và bảng lệch nhau.
+Không sửa các file `V1` đến `V4` đã có. Tạo file mới, ví dụ `V5__add_due_date.sql`, Flyway sẽ chạy nó đúng một lần khi app khởi động. Nhớ thêm field tương ứng vào `TodoJpaEntity`, vì `ddl-auto=validate` sẽ báo lỗi nếu entity và bảng lệch nhau.
 
 ## Vì sao tách như vậy?
 

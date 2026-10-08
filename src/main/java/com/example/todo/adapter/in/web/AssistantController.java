@@ -3,9 +3,6 @@ package com.example.todo.adapter.in.web;
 import com.example.todo.adapter.in.web.dto.AssistantChatRequest;
 import com.example.todo.application.common.Actor;
 import com.example.todo.application.common.AssistantEvent;
-import com.example.todo.application.common.AssistantModelException;
-import com.example.todo.application.common.InvalidAssistantRequestException;
-import com.example.todo.application.common.TooManyAssistantRequestsException;
 import com.example.todo.application.port.in.ChatWithAssistantUseCase;
 import com.example.todo.application.port.in.ChatWithAssistantUseCase.Outcome;
 import com.example.todo.config.AssistantProperties;
@@ -19,22 +16,15 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.CacheControl;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
-import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
-import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.core.Authentication;
-import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 
@@ -44,12 +34,8 @@ import java.util.concurrent.ExecutorService;
  *
  * Luồng xử lý:
  * 1. Trên luồng request: đọc người dùng từ token (luồng khác không có SecurityContext), kiểm tra yêu cầu,
- *    giới hạn tần suất và gọi Claude vòng đầu. Lỗi ở đây trả HTTP status + ProblemDetail (400, 429, 503).
+ *    giới hạn tần suất và gọi Claude vòng đầu. Lỗi ở đây thành HTTP 400 / 429 / 503 (GlobalExceptionHandler).
  * 2. Trả 200 text/event-stream rồi phát sự kiện trên luồng riêng. Lỗi từ đây thành sự kiện error.
- * Client ngắt kết nối (nút Dừng) thì lần ghi kế tiếp thất bại và use case dừng gọi Claude ngay.
- *
- * Lỗi được xử lý ngay trong controller và luôn ghi kiểu application/problem+json: client gửi
- * "Accept: text/event-stream", để Spring tự chọn định dạng thì không chọn được và đổi thành 406.
  */
 @RestController
 @ConditionalOnAssistantEnabled
@@ -57,7 +43,6 @@ import java.util.concurrent.ExecutorService;
 public class AssistantController {
 
     private static final Logger log = LoggerFactory.getLogger(AssistantController.class);
-    private static final MediaType EVENT_STREAM_UTF8 = new MediaType("text", "event-stream", StandardCharsets.UTF_8);
 
     private final ChatWithAssistantUseCase chat;
     private final ExecutorService executor;
@@ -102,106 +87,36 @@ public class AssistantController {
         ChatWithAssistantUseCase.Reply reply = chat.start(request.toCommand(actor));
 
         ResponseBodyEmitter emitter = new ResponseBodyEmitter(properties.streamTimeout().toMillis());
-        SseSink sink = new SseSink(emitter);
-        emitter.onCompletion(sink::markClosed);
-        emitter.onTimeout(sink::markClosed);
-        emitter.onError(e -> sink.markClosed());
-
+        SseEventSink sink = new SseEventSink(emitter);
         Map<String, String> mdc = MDC.getCopyOfContextMap();
         executor.execute(() -> deliver(actor, reply, sink, mdc));
 
         return ResponseEntity.ok()
-                .contentType(EVENT_STREAM_UTF8)
+                .contentType(SseEventSink.MEDIA_TYPE)
                 .cacheControl(CacheControl.noStore())
                 // Báo nginx đừng gom đệm luồng, nếu không sự kiện bị giữ lại không tới client ngay.
                 .header("X-Accel-Buffering", "no")
                 .body(emitter);
     }
 
-    private void deliver(Actor actor, ChatWithAssistantUseCase.Reply reply, SseSink sink, Map<String, String> mdc) {
+    /** Chạy trên luồng riêng. Mang theo MDC để dòng log vẫn có request id. */
+    private void deliver(Actor actor, ChatWithAssistantUseCase.Reply reply, SseEventSink sink,
+                         Map<String, String> mdc) {
         if (mdc != null) {
             MDC.setContextMap(mdc);
         }
         try {
             Outcome outcome = reply.deliver(sink);
-            // Chỉ ghi số liệu, không ghi nội dung hội thoại. Request id có sẵn trong MDC.
+            // Chỉ ghi số liệu, không ghi nội dung hội thoại.
             log.info("Assistant reply: user={} status={} toolRounds={} inputTokens={} outputTokens={}",
                     actor.userId(), outcome.status(), outcome.toolRounds(),
                     outcome.inputTokens(), outcome.outputTokens());
         } catch (RuntimeException e) {
             log.error("Assistant reply failed: user={}", actor.userId(), e);
-            sink.emit(new AssistantEvent.Error(
-                    "Trợ lý đang gặp sự cố nên chưa trả lời xong. Bạn thử lại sau nhé."));
+            sink.emit(new AssistantEvent.Error("Trợ lý đang gặp sự cố nên chưa trả lời xong. Bạn thử lại sau nhé."));
         } finally {
             sink.complete();
             MDC.clear();
         }
-    }
-
-    /** Ghi sự kiện ra kết nối. Ghi thất bại nghĩa là client đã đi: báo use case dừng. */
-    private static final class SseSink implements ChatWithAssistantUseCase.AssistantEventSink {
-
-        private final ResponseBodyEmitter emitter;
-        private volatile boolean closed;
-
-        private SseSink(ResponseBodyEmitter emitter) {
-            this.emitter = emitter;
-        }
-
-        @Override
-        public boolean emit(AssistantEvent event) {
-            if (closed) {
-                return false;
-            }
-            try {
-                emitter.send(AssistantSseFormat.format(event), EVENT_STREAM_UTF8);
-                return true;
-            } catch (IOException | IllegalStateException e) {
-                closed = true;
-                return false;
-            }
-        }
-
-        private void markClosed() {
-            closed = true;
-        }
-
-        private void complete() {
-            if (!closed) {
-                closed = true;
-                emitter.complete();
-            }
-        }
-    }
-
-    // ------------------------------------------------------------------ lỗi trước khi bắt đầu stream
-
-    @ExceptionHandler(InvalidAssistantRequestException.class)
-    public ResponseEntity<ProblemDetail> handleInvalid(InvalidAssistantRequestException ex) {
-        return problem(HttpStatus.BAD_REQUEST, ex.getMessage(), HttpHeaders.EMPTY);
-    }
-
-    @ExceptionHandler(HttpMessageNotReadableException.class)
-    public ResponseEntity<ProblemDetail> handleUnreadable(HttpMessageNotReadableException ex) {
-        return problem(HttpStatus.BAD_REQUEST, "Failed to read request body", HttpHeaders.EMPTY);
-    }
-
-    @ExceptionHandler(TooManyAssistantRequestsException.class)
-    public ResponseEntity<ProblemDetail> handleTooMany(TooManyAssistantRequestsException ex) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.set(HttpHeaders.RETRY_AFTER, Long.toString(ex.retryAfterSeconds()));
-        return problem(HttpStatus.TOO_MANY_REQUESTS, ex.getMessage(), headers);
-    }
-
-    @ExceptionHandler(AssistantModelException.class)
-    public ResponseEntity<ProblemDetail> handleModelUnavailable(AssistantModelException ex) {
-        return problem(HttpStatus.SERVICE_UNAVAILABLE, "The assistant is temporarily unavailable", HttpHeaders.EMPTY);
-    }
-
-    private static ResponseEntity<ProblemDetail> problem(HttpStatus status, String detail, HttpHeaders headers) {
-        return ResponseEntity.status(status)
-                .headers(headers)
-                .contentType(MediaType.APPLICATION_PROBLEM_JSON)
-                .body(ProblemDetail.forStatusAndDetail(status, detail));
     }
 }

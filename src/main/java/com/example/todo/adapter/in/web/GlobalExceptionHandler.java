@@ -1,6 +1,9 @@
 package com.example.todo.adapter.in.web;
 
+import com.example.todo.application.common.AssistantModelException;
+import com.example.todo.application.common.InvalidAssistantRequestException;
 import com.example.todo.application.common.InvalidPageQueryException;
+import com.example.todo.application.common.TooManyAssistantRequestsException;
 import com.example.todo.application.common.TooManySubscriptionsException;
 import com.example.todo.domain.exception.EmailAlreadyUsedException;
 import com.example.todo.domain.exception.ForbiddenOperationException;
@@ -48,7 +51,8 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
     }
 
-    @ExceptionHandler({InvalidTodoException.class, InvalidUserException.class, InvalidPageQueryException.class})
+    @ExceptionHandler({InvalidTodoException.class, InvalidUserException.class, InvalidPageQueryException.class,
+            InvalidAssistantRequestException.class})
     public ProblemDetail handleInvalid(RuntimeException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
     }
@@ -70,6 +74,21 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(TooManySubscriptionsException.class)
     public ProblemDetail handleTooMany(TooManySubscriptionsException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.TOO_MANY_REQUESTS, ex.getMessage());
+    }
+
+    /** Hỏi trợ lý AI quá số lần cho phép trong một phút. Retry-After cho biết bao lâu nữa hỏi lại được. */
+    @ExceptionHandler(TooManyAssistantRequestsException.class)
+    public ResponseEntity<ProblemDetail> handleTooManyAssistantRequests(TooManyAssistantRequestsException ex) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, Long.toString(ex.retryAfterSeconds()))
+                .body(ProblemDetail.forStatusAndDetail(HttpStatus.TOO_MANY_REQUESTS, ex.getMessage()));
+    }
+
+    /** Trợ lý AI không gọi được Claude trước khi kịp trả lời. Chi tiết đã được adapter ghi log. */
+    @ExceptionHandler(AssistantModelException.class)
+    public ProblemDetail handleAssistantUnavailable(AssistantModelException ex) {
+        return ProblemDetail.forStatusAndDetail(
+                HttpStatus.SERVICE_UNAVAILABLE, "The assistant is temporarily unavailable");
     }
 
     @ExceptionHandler(ForbiddenOperationException.class)

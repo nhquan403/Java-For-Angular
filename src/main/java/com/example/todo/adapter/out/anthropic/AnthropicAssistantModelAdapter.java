@@ -127,15 +127,15 @@ public class AnthropicAssistantModelAdapter implements AssistantModelPort {
         }
     }
 
-    /** Tên đầy đủ vì AssistantModelPort cũng có StopReason (lớp lồng được kế thừa che mất import). */
-    private static com.anthropic.models.messages.StopReason.Value stopReasonValue(Message response) {
-        return response.stopReason()
+    /**
+     * Đổi stop_reason của SDK sang StopReason của port. Kiểu của SDK phải viết tên đầy đủ vì
+     * AssistantModelPort cũng có StopReason (lớp lồng được kế thừa che mất import).
+     */
+    private static StopReason stopReason(Message response) {
+        var value = response.stopReason()
                 .map(com.anthropic.models.messages.StopReason::value)
                 .orElse(com.anthropic.models.messages.StopReason.Value._UNKNOWN);
-    }
-
-    private static StopReason stopReason(Message response) {
-        return switch (stopReasonValue(response)) {
+        return switch (value) {
             case END_TURN -> StopReason.END_TURN;
             case TOOL_USE -> StopReason.TOOL_USE;
             case MAX_TOKENS -> StopReason.MAX_TOKENS;
