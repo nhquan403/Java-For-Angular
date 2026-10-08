@@ -19,6 +19,7 @@ mvn verify
 |---|---|
 | `http://localhost:8080/api/auth/...` | Đăng ký, đăng nhập (công khai) |
 | `http://localhost:8080/api/todos` | API todo (cần đăng nhập) |
+| `http://localhost:8080/api/assistant/chat` | Trợ lý AI dạng chat (cần đăng nhập, cần `ANTHROPIC_API_KEY`) |
 | `http://localhost:8080/swagger-ui.html` | Tài liệu API (chỉ profile dev) |
 | `http://localhost:8080/actuator/health` | Kiểm tra app còn sống |
 
@@ -50,6 +51,7 @@ mvn verify
 | Health check (Actuator) | `/actuator/health` |
 | Tài liệu API (OpenAPI) | `OpenApiConfig` |
 | CORS | `WebConfig`, `app.cors.allowed-origins` |
+| Trợ lý AI (Claude) trả lời qua SSE, đọc todo bằng tool | `AssistantService`, `AssistantController`, `AnthropicAssistantModelAdapter` |
 | Test tích hợp | `TodoApiIntegrationTest` |
 | Test kiến trúc (ArchUnit) | `ArchitectureTest` |
 | CI (GitHub Actions) | `.github/workflows/ci.yml` |
@@ -91,8 +93,8 @@ src/main/java/com/example/todo/
 │   ├── common/                    Actor, AuthTokens, PageQuery, PageResult, ...
 │   ├── port/in/                   use case todo, auth, quản lý user
 │   ├── port/out/                  TodoRepositoryPort, UserRepositoryPort, RefreshTokenRepositoryPort,
-│   │                              PasswordHasherPort, TokenPort
-│   └── service/                   TodoService, AuthService, UserService, RealtimeService
+│   │                              PasswordHasherPort, TokenPort, AssistantModelPort
+│   └── service/                   TodoService, AuthService, UserService, RealtimeService, AssistantService
 ├── adapter/
 │   ├── in/web/                  TodoController, AuthController, AdminUserController,
 │   │                              GlobalExceptionHandler, ProblemJsonSecurityHandlers, CorrelationIdFilter, dto/
@@ -102,6 +104,7 @@ src/main/java/com/example/todo/
 │   ├── in/scheduler/            RefreshTokenCleanupJob, TicketPurgeJob
 │   ├── out/persistence/         JpaEntity + SpringData repository + PersistenceAdapter cho todo, user, refresh token
 │   ├── out/messaging/           OutboxTodoEventPublisher, OutboxRelay, InProcessTodoEventPublisher, TodoEventJson
+│   ├── out/anthropic/           AnthropicAssistantModelAdapter (gọi Claude bằng Claude Java SDK)
 │   └── out/security/            BcryptPasswordHasher, JwtTokenAdapter
 ├── config/                      BeanConfig, SecurityConfig, JwtConfig, WebConfig (CORS), OpenApiConfig, SchedulingConfig,
 │                                  RealtimeConfig, WebSocketConfig, KafkaConfig
@@ -232,6 +235,88 @@ Chạy cả hệ thống có Kafka: `docker compose up --build` (compose đã c�
 - **Tuổi thọ kết nối bằng hạn access token:** quyền của người dùng không "sống" lâu hơn token.
 - **Gói tin nhỏ:** sự kiện chỉ mang 6 trường; JSON viết tay có test cho phần thoát ký tự (title không thể chèn thêm trường giả).
 
+## Trợ lý AI (mini chat)
+
+`POST /api/assistant/chat` gửi câu hỏi cho Claude và nhận câu trả lời dạng **Server-Sent Events**. Trợ lý đọc được todo của người đang đăng nhập bằng tool và gợi ý todo mới để frontend điền vào form tạo. Trợ lý **không** tạo, sửa hay xóa dữ liệu: người dùng tự bấm "Thêm".
+
+```
+FE --POST /api/assistant/chat--> AssistantController (adapter/in/web)
+                                   | đọc user từ token, kiểm tra, rate limit, gọi Claude vòng đầu
+                                   v
+                                AssistantService (application)  --tool--> ListTodosUseCase / GetTodoUseCase
+                                   |                                       (quyền của người gọi, như GET /api/todos)
+                                   v
+                                AssistantModelPort --> AnthropicAssistantModelAdapter (adapter/out/anthropic) --> Claude
+```
+
+### Bật tính năng
+
+| Biến / thuộc tính | Mặc định | Ý nghĩa |
+|---|---|---|
+| `ANTHROPIC_API_KEY` (biến môi trường) | không có | **Bắt buộc.** Thiếu thì endpoint không được đăng ký (404, frontend hiện "trợ lý chưa được bật"), app vẫn chạy bình thường. Không ghi key vào file cấu hình |
+| `app.assistant.enabled` | `true` | `false` thì tắt hẳn (404) kể cả khi có key |
+| `app.assistant.model` | `claude-opus-5-5` | Model Claude |
+| `app.assistant.max-tokens` | `16000` | Token tối đa của một vòng trả lời, gồm cả phần suy nghĩ |
+| `app.assistant.rate-limit-per-minute` | `20` | Số câu hỏi tối đa của một người trong một phút, vượt thì 429 |
+| `app.assistant.request-timeout` | `60s` | Chờ tối đa một lần gọi Claude |
+| `app.assistant.stream-timeout` | `5m` | Thời gian tối đa của cả một câu trả lời |
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...      # lấy ở console.anthropic.com
+mvn spring-boot:run
+# Docker: đặt ANTHROPIC_API_KEY trong file .env (xem .env.example), docker-compose.yml đã chuyển nó vào app
+```
+
+Frontend Angular chạy ở `http://localhost:4200` thì domain đó phải có trong `app.cors.allowed-origins` (mặc định chỉ có 3000 và 5173), hoặc frontend gọi qua proxy của `ng serve`. `/api/assistant/**` dùng chung CORS và bảo mật Bearer với `/api/todos`.
+
+### Hợp đồng với frontend
+
+Request (`Accept: text/event-stream`):
+
+```json
+{
+  "messages": [ { "role": "user", "content": "Tóm tắt các việc chưa xong" } ],
+  "context": {
+    "page": "todo-list", "path": "/todos",
+    "query": { "completed": false, "page": 0, "size": 10, "sortBy": "createdAt", "direction": "desc" },
+    "todoId": null, "createDraft": null
+  }
+}
+```
+
+Response 200 `text/event-stream`, mỗi sự kiện là `event: <tên>`, `data: <JSON>` rồi một dòng trống:
+
+| Sự kiện | Dữ liệu | Ý nghĩa |
+|---|---|---|
+| `delta` | `{"text": "..."}` | Một phần câu trả lời, nối dần |
+| `tool` | `{"name": "list_todos" \| "get_todo" \| "suggest_todo"}` | Trợ lý đang dùng tool |
+| `suggestion` | `{"title": "...", "description": "..." \| null}` | Gợi ý todo, frontend hiện nút "Điền vào form tạo" |
+| `done` | `{}` | Kết thúc |
+| `error` | `{"message": "..."}` | Lỗi sau khi đã bắt đầu trả lời (tiếng Việt). Luồng đóng luôn, không có `done` |
+
+Lỗi trước khi bắt đầu trả lời là HTTP status + ProblemDetail: 400 (yêu cầu sai), 401, 429 (quá giới hạn, có `Retry-After`), 503 (Claude lỗi ngay vòng đầu). Client ngắt kết nối (nút Dừng) thì server dừng gọi Claude ở lần ghi kế tiếp.
+
+```bash
+curl -N -X POST localhost:8080/api/assistant/chat -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -H "Accept: text/event-stream" \
+  -d '{"messages":[{"role":"user","content":"Tóm tắt các việc chưa xong"}],"context":null}'
+```
+
+### Giới hạn
+
+- Tối đa 20 tin mỗi request, mỗi tin tối đa 4000 ký tự; `role` chỉ là `user` hoặc `assistant`; tin đầu và tin cuối phải là `user` (tin cuối là `assistant` thì model hiểu là "viết tiếp" và từ chối).
+- Tối đa 6 vòng tool cho một câu hỏi; cần thêm thì dừng và trả sự kiện `error`. `list_todos` trả tối đa 50 todo mỗi lần.
+- Rate limit giữ trong bộ nhớ, mỗi instance đếm riêng: chạy N instance thì giới hạn thực tế gấp N.
+- Không lưu lịch sử chat: frontend gửi lại toàn bộ hội thoại mỗi lần hỏi.
+- Mỗi vòng gọi Claude không stream: mỗi khối văn bản thành một sự kiện `delta` (không phải từng chữ). Vòng đầu chạy trên luồng request để trả được 503 đúng nghĩa, nên header 200 về sau khi Claude trả lời vòng đầu.
+- Log chỉ ghi user id, số vòng tool, số token và request id; không ghi nội dung hội thoại.
+
+### Chi phí cần lưu ý
+
+- Claude Opus 5.5 tính **$4 / 1 triệu token đầu vào** và **$20 / 1 triệu token đầu ra** (giá tại thời điểm viết, xem anthropic.com/pricing). Phần suy nghĩ (thinking) của model tính như token đầu ra; effort đặt `LOW` để giữ ngắn.
+- Mỗi lần gọi tool là thêm một lượt gọi Claude, và mỗi lượt gửi lại toàn bộ hội thoại + kết quả tool. Một câu hỏi thường tốn 1 đến 3 lượt, vài nghìn token đầu vào, ước chừng vài xu Mỹ. Hội thoại dài (20 tin x 4000 ký tự) có thể tốn gấp nhiều lần.
+- Theo dõi bằng dòng log `Assistant reply: ... inputTokens=... outputTokens=...` và đặt giới hạn chi tiêu (spend limit) trong Anthropic Console. Giảm `app.assistant.rate-limit-per-minute` nếu cần.
+
 ## Endpoint
 
 | Method | URL | Quyền | Mô tả |
@@ -248,6 +333,7 @@ Chạy cả hệ thống có Kafka: `docker compose up --build` (compose đã c�
 | PATCH | `/api/todos/{id}/complete` | đăng nhập | Đánh dấu hoàn thành |
 | PATCH | `/api/todos/{id}/reopen` | đăng nhập | Mở lại |
 | DELETE | `/api/todos/{id}` | đăng nhập | Xóa (204) |
+| POST | `/api/assistant/chat` | đăng nhập | Hỏi trợ lý AI, trả lời dạng SSE (404 nếu chưa bật) |
 | POST | `/api/realtime/ticket` | đăng nhập | Lấy ticket dùng một lần để mở SSE/WebSocket |
 | GET | `/api/realtime/stream` | đăng nhập hoặc `?ticket=` | Luồng sự kiện SSE |
 | GET | `/ws/todos` | đăng nhập hoặc `?ticket=` | WebSocket nhận sự kiện (giao thức `ws://`) |
@@ -266,8 +352,9 @@ Tham số danh sách: `completed`, `page` (từ 0), `size` (1..100, mặc địn
 | 404 | Không có todo với id đó (hoặc todo của người khác), hoặc đường dẫn không tồn tại |
 | 405 | Sai method |
 | 409 | `version` gửi lên đã cũ, hoặc email đã được đăng ký |
-| 429 | Mở quá nhiều kết nối thời gian thực, hoặc có quá nhiều ticket chờ dùng |
+| 429 | Mở quá nhiều kết nối thời gian thực, có quá nhiều ticket chờ dùng, hoặc hỏi trợ lý AI quá số lần mỗi phút |
 | 500 | Lỗi bất ngờ, chi tiết chỉ ghi vào log, không lộ cho client |
+| 503 | Trợ lý AI không gọi được Claude lúc bắt đầu trả lời |
 
 ## Thử bằng curl
 
@@ -318,6 +405,7 @@ Không sửa các file `V1` đến `V3`. Tạo file mới, ví dụ `V4__add_due
 ## Vì sao tách như vậy?
 
 - `RealtimeServiceTest`, `OutboundPumpTest`, `RealtimeTicketStoreTest`, `TodoEventJsonTest` kiểm tra phần thời gian thực (ai nhận sự kiện nào, client chậm bị ngắt, ticket dùng một lần, thoát ký tự JSON) mà không cần Spring, Kafka hay mạng.
+- `AssistantServiceTest` test trợ lý AI bằng mô hình giả `ScriptedAssistantModel` (thứ tự sự kiện, quyền đọc todo, giới hạn 6 vòng, lỗi và từ chối), không gọi Claude thật. `AssistantApiIntegrationTest` kiểm tra hợp đồng SSE qua HTTP.
 - `TodoServiceTest`, `AuthServiceTest`, `UserServiceTest` test toàn bộ use case (kể cả xoay vòng token và phân quyền) bằng các lớp giả `InMemory...Repository`, không cần Spring hay database, chạy trong mili giây.
 - Đổi PostgreSQL sang MongoDB: viết adapter mới cho `TodoRepositoryPort`, lõi không đổi.
 - Thêm giao diện gọi use case (CLI, gRPC, message queue): thêm adapter vào, lõi không đổi.

@@ -63,6 +63,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:?Hay dat JWT_SECRET trong file .env (xem .env.example)}
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      # Trợ lý AI: để trống thì tắt (endpoint /api/assistant/** trả 404).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     ports:
       - "8080:8080"
 

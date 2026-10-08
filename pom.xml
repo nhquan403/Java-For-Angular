@@ -22,6 +22,7 @@
         <!-- Hai thư viện này không nằm trong BOM của Spring Boot nên phải ghi version -->
         <springdoc.version>3.1.1</springdoc.version>
         <archunit.version>1.4.2</archunit.version>
+        <anthropic-java.version>2.69.0</anthropic-java.version>
     </properties>
 
     <dependencies>
@@ -90,6 +91,13 @@
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
             <version>${springdoc.version}</version>
+        </dependency>
+
+        <!-- Claude Java SDK chính thức: trợ lý AI (adapter/out/anthropic) -->
+        <dependency>
+            <groupId>com.anthropic</groupId>
+            <artifactId>anthropic-java</artifactId>
+            <version>${anthropic-java.version}</version>
         </dependency>
 
         <!-- Database: PostgreSQL cho prod, H2 in-memory cho dev và test -->

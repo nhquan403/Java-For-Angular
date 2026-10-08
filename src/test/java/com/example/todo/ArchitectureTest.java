@@ -60,6 +60,12 @@ class ArchitectureTest {
             .because("WebSocket là chi tiết giao thức, chỉ adapter realtime và cấu hình được biết");
 
     @ArchTest
+    static final ArchRule claudeSdkOnlyInAnthropicAdapter = noClasses()
+            .that().resideOutsideOfPackages("..adapter.out.anthropic..", "..config..")
+            .should().dependOnClassesThat().resideInAPackage("com.anthropic..")
+            .because("Claude SDK là chi tiết hạ tầng, lõi chỉ biết AssistantModelPort");
+
+    @ArchTest
     static final ArchRule persistenceDoesNotTouchWeb = noClasses()
             .that().resideInAPackage("..adapter.out..")
             .should().dependOnClassesThat().resideInAPackage("..adapter.in..")
